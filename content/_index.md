@@ -2,16 +2,13 @@
 action_label: Read More &rarr;
 action_link: /about
 action_type: text
-description: First stab at creating a Hugo blog directly from R. This will be updated
- once I gain a better understanding of what's what. The main goal in the short run 
- is to get blog posts up and running for my Text as Data submissions. Everything else 
- will be a weird mess mixed in with template content.
+description: I'm a DACSS MS student at UMass Amherst. I've created this site to get blog posts   up and running for my Text as Data class. I'll be sharing my progress as I work through a text  project that explores the way various stakeholders interact with the Federal Communications     Commission
 image_left: true
 images:
 - img/revoir.jpg
 show_action_link: true
-show_social_links: true
-subtitle: A Hugo Apero blog attempt
+show_social_links: false
+subtitle: Data Analytics & Computational Social Science
 text_align_left: false
 title: Marina's Blog
 type: home
