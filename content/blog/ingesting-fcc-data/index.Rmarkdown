@@ -1,0 +1,266 @@
+---
+title: "Ingesting FCC Data"
+excerpt: "An in-depth look at the trials and tribulations of bringing in all the data I need"
+date: 2022-03-20
+author: "Marina"
+draft: false
+images:
+series:
+tags:
+categories:
+layout: single
+---
+
+## It took a lot of guts, but I finally got everything I (think I) will need for pre-processing and analysis
+
+Getting all the stuff in was a multi-step process. I definitely didn't do things in the most efficient way possible, but I'm pleased that at least I got it done. Here's a summary of the steps I took:
+
+* I downloaded a CSV file from the Net Neutrality docket containing information for every ex-parte filing in the 17-108 docket
+* From that downloaded CSV, I extracted metadata and URLs containing download links for the PDF attachments (and other formats) representing the actual ex-parte filings I'm interested in
+* Using those links, I downloaded all ex parte documents in a loop into a project folder
+* I linked the files (via filename and filing ID) to the metadata I had available
+* Using those filing IDs, I obtained additional metadata by querying the FCC API
+
+Let's review the steps in more detail:
+
+### Getting started: downloading the initial file from the FCC
+
+Lucky for me, navigating to the [FCC webpage for the Net Neutrality docket](https://www.fcc.gov/ecfs/search/filings?proceedings_name=17-108&sort=date_disseminated,DESC&submissiontype_description=NOTICE%20OF%20EXPARTE) allowed me to download a CSV file containing important information about ex parte filings.
+
+![FCC Screenshot](fcc-screenshot.jpg)
+
+Opening it up revealed a lot of useful information.
+
+```{r warning=FALSE, message=FALSE}
+#Load libraries
+#General
+library(tidyverse)
+#For API
+library(httr2) 
+library(jsonlite)
+
+ecfsresults <- read_csv("C:/Users/Marina/OneDrive/Documents/DACSS/TaD/TaD/data/ecfsresults(2).csv")
+
+head(ecfsresults)
+
+```
+### Cleaning things up
+
+```{r}
+#Remove empty columns
+ecfsresults <- ecfsresults %>% discard(~all(is.na(.) | . ==""))
+
+#Keep relevant columns for ID'ing filings and their attachments
+df <- ecfsresults %>% 
+      select(filing_url = `Filing URL`,
+             attachment_1 = `Link(s) to Attachment(s)`,
+             attachment_2 = `...10`,
+             attachment_3 = `...11`,
+             attachment_4 = `...12`,
+             attachment_5 = `...13`)
+#Extract filing ID
+df <- df %>% 
+      mutate(filing_id = str_extract(filing_url, "\\d+")) %>% 
+      select(!filing_url)
+
+#Reshape wide to long
+df <- df %>% 
+      pivot_longer(!filing_id, names_to = "name", values_to = "attach")
+
+#Remove empty rows
+df <- df %>% 
+      filter(!is.na(attach))
+
+#Separate between filename and file URL
+df <- df %>% 
+      separate(attach, c("a", "b", "c", "d", "e", "f", "g"), extra = "merge", fill = "left",
+           sep = '"')
+
+#Reorganize with relevant cols only
+df <- df %>% 
+      select(filing_id, 
+             attachment_url = d,
+             attachment_name = f)
+
+```
+
+I did some cleaning to prepare the file for additional use. Learned how to use `separate` well enough to extract download URLs from a very convoluted string mess.
+
+Unfortunately for me, some filings contained more than one document submission. I was expecting 320 download URLs for 320 filing IDs (AKA 320 submissions), but I got a little more than that- 347. If I felt more comfortable with text analysis, I probably would have downloaded everything and programatically determined which documents needed to be discarded based on how they were formatted. But since the total number of documents was relatively small, I decided to just manually check which documents needed to be kept in instances where more than one document per filing existed.
+
+```{r}
+#Identify and eliminate non-exparte documents
+#Expected result: 320 rows (1 row per filing, total 320 filings)
+df <- df %>% 
+      group_by(filing_id) %>% 
+      mutate(total = n_distinct(attachment_url)) %>% 
+      mutate(keep = attachment_name %in% 
+               c("OTI Commissioner Starks Ex Parte.pdf",
+                 "NAM Ex Parte Filing 10-19-17.pdf",
+                 "Marietta 7-19-17 Ex Parte w Cmsr Clyburn and Ohio County Cmsrs.pdf",
+                 "Ex Parte Notice Dec 13 2017 Office of Illinois Attorney General.pdf",
+                 "OTI FP Rosenworcel ex parte notice Dec 6 2017.pdf",
+                 "BT Americas Ex parte  discussion with Nathan Egan and Amy Bender on Streamlining Proposals Sept 1.pdf",
+                 "TK-ex parte-IF Pai 05 10 17.pdf",
+                 "One pager letter FCC priorities.pdf",
+                 "OTI Reliance Ex Parte Final.pdf",
+                 "Bennett Ex Parte Comments on Internet Freedom final.docx",
+                 "FINAL INCOMPAS Interconnection Ex Parte 11.20.2017 1.pdf",
+                 "benton20171117.docx",
+                 "Ex Parte RIF ORielly.docx",
+                 "Esser 10-17-17 ex parte.pdf",
+                 "Marietta 7-18-17 Ex Parte Cmsr Clyburn and WV County Cmsrs (1).pdf")) %>% 
+    filter(total == 1 | (total > 1 & keep == TRUE)) %>% 
+    select(-total, -keep)
+```
+
+### Ready to download
+
+Once everything was prepped, I now had a clean, vetted variable containing download links for ex parte filings:
+
+```{r}
+head(df$attachment_url)
+```
+
+Next order of business: download all these files. Note: I originally tried using `download.file` without any specific modes, and that proved to be a mistake. It downloaded every file, but most of them were downloaded as blanks. I don't fully understand it, but specifying `mode="wb"` took care of the problem.
+
+```{r eval=FALSE}
+#Use list of links to download all relevant ex parte documents
+destination <- "C:\\Users\\Marina\\OneDrive\\Documents\\DACSS\\TaD\\TaD\\downloads\\"
+
+for (i in 1:320) {
+
+  #print(link)
+  print(i)
+  destfile <- paste0(destination, df$attachment_name[i])
+  link <- df$attachment_url[i]
+  download.file(link, destfile, mode="wb") #add mode, or else it downloads blanks
+  Sys.sleep(1) #Wait two seconds between downloads
+}
+
+#305 files downloaded instead of 320. Investigate what happened to the missing 15 
+#(and which files are missing)
+length(list.files("./downloads"))
+
+investigate <- df$attachment_name
+downloaded <- list.files("./downloads")
+
+setdiff(investigate, downloaded)
+setdiff(downloaded, investigate)
+
+length(unique(df$attachment_name)) #Wait, looks like some file names were repeated?
+
+check <- df %>% 
+          ungroup() %>% 
+          group_by(attachment_name) %>% 
+          mutate(total = n_distinct(attachment_url))
+#They were duplicate filings! So the real number is 305.
+
+```
+
+### Combine the useful information I have so far
+
+```{r}
+#Link files + filing IDs with ECFS-provided metadata (date of filing + filer name)
+ecfs_data <- ecfsresults %>% 
+              select(date_received = `Date Received`, 
+                     filers = `Name of Filer(s)`,
+                     fileurl = `Filing URL`) %>% 
+              separate(fileurl, c("a", "b", "c", "filing_id", "e"), extra = "merge", fill = "left",
+                       sep = '"') %>% 
+              select(-a, -b, -c, -e)
+
+ecfs_data <- left_join(ecfs_data, df, by="filing_id")
+#Remove dupes (even if they have distinct filing IDs, they are still dupes)
+
+ecfs_data <- ecfs_data %>% 
+              group_by(filers, attachment_name) %>% 
+              mutate(step = row_number()) %>% 
+  #Deal with one straggler, ID 10508291612004, which filed twice with a 
+  #slightly different name the second time
+              filter(step == 1 & filing_id != 10508291612004) %>% 
+              select(-step)
+
+#Remove one incorrectly filed document that is not actually an exparte
+ecfs_data <- ecfs_data %>% 
+              filter(filing_id != 10502189541850)
+
+#Still missing one important part of the metadata: who was the exparte presented to?
+ecfs_data$presented_to <- ""
+
+```
+
+And here I got to the final part of the data ingestion process. I had so far managed to avoid dealing with the FCC's API, but I wanted an easy way to know _who_ the ex parte filings were presented to. This information will be present in the actual filed documents that I downloaded-- but if I could make them part of the metadata dataframe that I assembled without even having to deal with pre-processing the documents, then that'd be a pretty good win for me. Plus, I really wanted to practice poking an API!
+
+### One last rodeo: extracting information from the FCC's API
+
+Fun fact: playing around/trying things with an API sometimes leads to your key getting blocked for too many requests. Whoops. Turns out you can only make 500 requests per hour with the FCC API. Lesson learned.
+
+The FCC API yields a lot of information, but I was only after one specific portion: who were the filings presented to? Were they presented to Ajit Pai? Jessica Rosenworcel? Someone else?
+
+```{r eval=FALSE, warning=FALSE, message=FALSE}
+key = "mykey"
+
+for (i in 1:304) { #Couldn't finish, too many requests got my account temporarily blocked
+  #Get filing ID and prepare API query
+  filing <- ecfs_data$filing_id[i]
+  request <- paste0("https://publicapi.fcc.gov/ecfs/filing/", filing, "?api_key=", key)
+  print(filing)
+  print(i)
+  #Query the API with my filing ID request
+  req <- request(request)
+  resp <- req %>% req_perform()
+  #Extract the body of the API response
+  resp_body  <- fromJSON(rawToChar(resp$body))
+  #Extract the "presented to" information from the API response
+  presented_to <- resp_body$presented_to[[1]]
+  presented_to$filing_id <- filing #Add filing ID to this dataframe
+  #Convert to wide to merge back in to wider dataset
+  presented_to <- presented_to %>% select(filing_id,
+                                          bureau_code,
+                                          name) %>%
+                                    pivot_wider(names_from = bureau_code,
+                                                values_from = name)
+  #Merge all values into one column for easier time bringing it back to the fold
+    #How many different columns other than ID are there?
+    l <- length(colnames(presented_to))
+    #Concatenate
+    presented_to <- presented_to %>%
+                    unite('presented_to', 2:l, remove = TRUE, sep = ", ")
+
+    ecfs_data <- rows_upsert(ecfs_data, presented_to, by="filing_id")
+
+  gc()
+  #Sys.sleep(2)
+
+}
+
+saveRDS(ecfs_data, file = "ecfs_data.rds")
+
+```
+
+I'm not sure if I did things the "right" way, but I essentially brought in the `presented_to` information one filing at a time, and merged it back to my existing dataframe using something I didn't know existed until this project: `rows_upsert`. I REALLY LIKE `rows_upsert`. Best discovery of March 2022.
+
+### Final Products
+
+Here's what my metadata dataframe looks like:
+
+```{r}
+ecfs_data <- readRDS("C:/Users/Marina/OneDrive/Documents/DACSS/TaD/TaD/ecfs_data.rds")
+
+library(DT)
+datatable(head(ecfs_data))
+```
+And here's all the files I downloaded:
+
+```{r}
+list.files("C:/Users/Marina/OneDrive/Documents/DACSS/TaD/TaD/downloads")
+```
+
+### Next Steps
+
+I have my files downloaded. Now I need to pre-process them. I'm going to face a number of challenges doing that. For example, I expected that the downloads would always be PDFs. But I noticed some Word documents thrown in there as well. We'll see how that affects things.
+
+I've taken a short tab at using `readtext` to bring everything in and I can already tell, it's not going to all magically work right off the box. But the goal, I must remind myself, will be to extract the first 1-2 paragraphs of every submission and figure out how to identify the kinds of ex parte that are described in these letters. Is this simply an ex parte letter submission? Did the filer meet with a commissioner? Was the meeting in person? All of this is necessary in order for me to count who met who, and how.
+
+The other part of the equation is the 'who.' I'll need to figure out how to deal with the filers and the presented_to people. There is a difference between presenting to *"Office of Commissioner Jessica Rosenworcel"* and presenting to *"Chairman Ajit Pai, Office of Commissioner Brendan Carr, Office of Commissioner Jessica Rosenworcel, Office of Commissioner Geoffrey Starks, Office of Commissioner Michael O'Rielly"* that I'll need to think more about. Likewise, I'll need to consider what goes into a filer being, for example, "Media Justice, Civil Rights, Public Interest, Labor, and Consumer Advocacy Organizations" vs. just, say, "Media Justice."
