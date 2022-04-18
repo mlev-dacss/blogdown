@@ -1,0 +1,125 @@
+---
+title: Initial (Super Low-Tech) Classification is Done!
+date: 2022-04-15
+author: "Marina"
+draft: false
+images:
+series:
+tags:
+categories:
+layout: single
+---
+
+Following up from the previous post, I set out to classify all the documents I downloaded to determine whether they were describing an actual meeting with the FCC, or if they were just letters expressing a position (without having had an in-person or telephone discussion with anyone in particular).
+
+In order to do this, I started out with a sample of 10% of my documents and manually reviewed them to determine which documents described meetings and which letters, and to get a feel for what words were used to describe a meeting.
+
+```{r, message=FALSE, warning=FALSE}
+library(tidyverse)
+
+set.seed(123)
+ecfs_texts <- readRDS("C:/Users/Marina/OneDrive/Documents/DACSS/TaD/TaD/ecfs_texts.rds")
+
+#Take a sample of 10% of texts
+ecfs_sample <- sample_frac(ecfs_texts, 0.1)
+
+```
+
+Manually going through the 30 texts was helpful as it gave me a good idea of what words were repeatedly being used to describe meetings ( _met with_, _met_, _phone conversation_ are some examples). I did encounter two instances of texts having completely messed up encoding, for example:
+
+```{r}
+cat(ecfs_texts$text[19])
+#Note: using sample_frac to take a random sample appears to take a new sample each time
+#the file is run, regardless of whether I set seed or not.
+```
+I went back to the original downloaded files to see what was going on, and once I opened one, it became clear. The messed up encoding was happening because the PDF was a scan of a hand written note:
+
+![Handwritten Document](handwritten-note.jpg)
+So the encoding problems serve as a flag for "handwritten note", which is in turn a flag for "letter" as opposed to a formal disclosure of a meeting that occurred with someone at the FCC.
+
+Once I went through the 30 documents, I came up with a preliminary list of terms to search for to classify the documents:
+
+```{r}
+#Try creating list of relevant words
+detect_words <- c(" forum", " met with", " met ", " conversed ", " telephone", 
+                  " conversation", " spoke ")
+
+#Test out this list by applying it to my sample
+for (i in 1:30) {
+  ecfs_sample$meeting[i] <- max(str_detect(ecfs_sample$text[i], detect_words))
+}
+
+table(ecfs_sample$meeting)
+```
+
+After reviewing the results, I found that I was getting some false positives (in other words, I was incorrectly identifying letters as declarations of meetings).
+
+This was happening because there were some pretty long non-meeting letters that eventually, after many pages, were using terms such as " _the criterion is *met*_" or " _this was *met* with derision_".
+
+I figured one easy way to deal with this would be to only look for my keywords in the first part of a text, as that's how all disclosures appear to work-- describing the meetings that happened in the first paragraph or so. The text isn't formatted in such a way that I can easily identify sentences or paragraphs, however, so I went by word count.
+
+```{r}
+for (i in 1:30) {
+  first_250_words <- word(str_squish(ecfs_sample$text[i]), 1, 250)
+  ecfs_sample$meeting_header[i] <- max(str_detect(first_250_words, detect_words))
+  
+}
+
+```
+
+Another manual review revealed that this took care of the problem splendidly. So it became time to apply my very low-tech solution to the entire dataset.
+
+The caveat: I initially picked 250 as the number of words to consider when searching for my key terms. But I later realized that 250 only made sense for longer documents that contained many more words. For documents shorter than 250 words, it made more sense to just scan the entire thing, and hope that the brevity would mean the word "met" would either be used as predicted, or not at all.
+
+```{r}
+for (i in 1:nrow(ecfs_texts)) {
+  
+  #If text is at least 250 words long or longer, evaluate only the first 250 words
+  if(str_count((str_squish(ecfs_texts$text[i])), " ") >= 250) {
+    first_250_words <- word(str_squish(ecfs_texts$text[i]), 1, 250)
+    ecfs_texts$meeting[i] <- max(str_detect(first_250_words, detect_words))
+  }
+  
+  #If it's shorter, evaluate all of it
+  if(str_count((str_squish(ecfs_texts$text[i])), " ") < 250) {
+    #It's a really small filing anyway, so look everywhere
+    ecfs_texts$meeting[i] <- max(str_detect(ecfs_texts$text[i], detect_words))
+  }
+  
+}
+
+table(ecfs_texts$meeting) # a surprisingly even split
+```
+
+I think the classification worked pretty well. I'll be doing spot checks to see if anything was missed. In the meantime, I'm sharing the classification and the full texts below in case anyone else wants to check if I missed anything or incorrectly flagged something using my method.
+
+This was originally going to be wrapped in a very pretty interactive table, but I guess it was too much for my computer, because trying to do it nicely led to pandoc killing my R session.
+
+So here's a less glorious version, where I print out the texts. First the ones classified as letters, and then the ones classified as meetings. I'm picking ten random ones for each group.   
+
+```{r}
+letter <- ecfs_texts %>%
+            filter(meeting == 0) %>%
+            select(text) %>%
+            head(10)
+
+for (i in 1:nrow(letter)) {
+  
+  print(paste0("Text Classified as Letter # ", i, " out of ", nrow(letter)))
+  print(cat(letter$text[i]))
+  
+}
+
+meeting <- ecfs_texts %>%
+            filter(meeting == 1) %>%
+            select(text) %>%
+            head(10)
+
+for (i in 1:nrow(meeting)) {
+  
+  print(paste0("Text Classified as Meeting # ", i, " out of ", nrow(meeting)))
+  print(cat(meeting$text[i]))
+  
+}
+
+```
